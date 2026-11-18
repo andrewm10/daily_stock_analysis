@@ -25,6 +25,8 @@ import pandas as pd
 import numpy as np
 
 from src.config import get_config
+from src.utils.rsi import wilder_rsi
+from src.schemas.decision_scale import signal_key_for_score
 
 logger = logging.getLogger(__name__)
 
@@ -306,30 +308,16 @@ class StockTrendAnalyzer:
         计算 RSI 指标（Wilder's EMA / SMMA 口径）
 
         公式：
-        - avg_gain / avg_loss 使用 ewm(alpha=1/period, adjust=False)
+        - avg_gain / avg_loss 以前 period 个涨跌幅的简单均值起算，再按 Wilder 递推（与 TA-Lib 一致）
         - RS = avg_gain / avg_loss
         - RSI = 100 - (100 / (1 + RS))
         """
         df = df.copy()
 
         for period in [self.RSI_SHORT, self.RSI_MID, self.RSI_LONG]:
-            # 计算价格变化
-            delta = df['close'].diff()
-
-            # 分离上涨和下跌
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
-
-            # 使用 Wilder's EMA / SMMA 口径，与常见 RSI 图表工具保持一致。
-            avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-            avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-
-            # 计算 RS 和 RSI
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-
-            # 填充 NaN 值
-            rsi = rsi.fillna(50)  # 默认中性值
+            # 与选股、告警共用同一 Wilder RSI（src/utils/rsi.py），口径一致；
+            # 预热期与无波动时为中性值 50。
+            rsi = wilder_rsi(df['close'], period)
 
             # 添加到 DataFrame
             col_name = f'RSI_{period}'
@@ -730,16 +718,24 @@ class StockTrendAnalyzer:
         result.signal_reasons = reasons
         result.risk_factors = risks
 
-        # 生成买入信号（调整阈值以适应新的100分制）
-        if score >= 75 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
+        # 生成买入信号（与 canonical decision scale 保持一致）
+        score_signal = signal_key_for_score(score)
+        if score_signal == "strong_buy" and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
             result.buy_signal = BuySignal.STRONG_BUY
-        elif score >= 60 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL, TrendStatus.WEAK_BULL]:
+        elif score_signal in {"strong_buy", "buy"} and result.trend_status in [
+            TrendStatus.STRONG_BULL,
+            TrendStatus.BULL,
+            TrendStatus.WEAK_BULL,
+        ]:
             result.buy_signal = BuySignal.BUY
-        elif score >= 45:
-            result.buy_signal = BuySignal.HOLD
-        elif score >= 30:
+        elif score_signal in {"strong_buy", "buy"} and result.trend_status in [
+            TrendStatus.CONSOLIDATION,
+            TrendStatus.WEAK_BEAR,
+        ]:
             result.buy_signal = BuySignal.WAIT
-        elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
+        elif score_signal == "watch":
+            result.buy_signal = BuySignal.WAIT
+        elif score_signal == "sell" or result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
             result.buy_signal = BuySignal.STRONG_SELL
         else:
             result.buy_signal = BuySignal.SELL

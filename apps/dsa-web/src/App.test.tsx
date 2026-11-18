@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import * as AuthContext from './contexts/AuthContext';
+import { UI_LANGUAGE_STORAGE_KEY } from './utils/uiLanguage';
 
 type AuthState = ReturnType<typeof AuthContext.useAuth>;
 
@@ -43,6 +44,10 @@ vi.mock('./pages/PortfolioPage', () => ({
   default: () => <div data-testid="portfolio-page">Portfolio</div>,
 }));
 
+vi.mock('./pages/DecisionSignalsPage', () => ({
+  default: () => <div data-testid="decision-signals-page">Decision signals</div>,
+}));
+
 vi.mock('./pages/BacktestPage', () => ({
   default: () => <div data-testid="backtest-page">Backtest</div>,
 }));
@@ -51,8 +56,16 @@ vi.mock('./pages/AlertsPage', () => ({
   default: () => <div data-testid="alerts-page">Alerts</div>,
 }));
 
+vi.mock('./pages/TokenUsagePage', () => ({
+  default: () => <div data-testid="token-usage-page">Usage</div>,
+}));
+
 vi.mock('./pages/SettingsPage', () => ({
   default: () => <div data-testid="settings-page">Settings</div>,
+}));
+
+vi.mock('./pages/DataCenterPage', () => ({
+  default: () => <div data-testid="data-center-page">Data center</div>,
 }));
 
 vi.mock('./pages/NotFoundPage', () => ({
@@ -84,6 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   chatPageShouldThrow.value = false;
   window.history.pushState({}, '', '/');
+  localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
   vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState());
 });
 
@@ -120,6 +134,94 @@ describe('App routing behavior', () => {
     expect(setCurrentRoute).toHaveBeenCalledWith('/chat');
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
     expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('preserves the query and fragment when redirecting a protected deep link to login', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      loggedIn: false,
+      setupState: 'enabled',
+    }));
+    const destination = '/settings?category=system#desktop-version-info';
+    window.history.pushState({}, '', destination);
+
+    render(<App />);
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/login');
+    expect(new URLSearchParams(window.location.search).get('redirect')).toBe(destination);
+    expect(window.location.hash).toBe('');
+  });
+
+  it('uses the safe deep link when auth resolves before the login page can navigate', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      loggedIn: true,
+      setupState: 'enabled',
+    }));
+    const destination = '/settings?category=system#desktop-version-info';
+    window.history.pushState({}, '', `/login?redirect=${encodeURIComponent(destination)}`);
+
+    render(<App />);
+
+    expect(await screen.findByTestId('settings-page')).toBeInTheDocument();
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe(destination);
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    'https://external.example/settings',
+    '//external.example/settings',
+    '/\\external.example/settings',
+    '/%5cexternal.example/settings',
+    '/%2fexternal.example/settings',
+    '/..//external.example/settings',
+    '/\t/external.example/settings',
+    '/login?redirect=%2Fsettings',
+    '/LOGIN/',
+  ])('falls back to home for unsafe or looping login redirect %s', async (destination) => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      loggedIn: true,
+      setupState: 'enabled',
+    }));
+    const origin = window.location.origin;
+    window.history.pushState({}, '', `/login?redirect=${encodeURIComponent(destination)}`);
+
+    render(<App />);
+
+    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+    expect(window.location.origin).toBe(origin);
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/');
+  });
+
+  it('routes /usage to the token usage page after auth is ready', async () => {
+    window.history.pushState({}, '', '/usage');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('token-usage-page')).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith('/usage');
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('routes /decision-signals to the AI signals page after auth is ready', async () => {
+    window.history.pushState({}, '', '/decision-signals');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('decision-signals-page')).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith('/decision-signals');
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('routes /data to the data capability page after auth is ready', async () => {
+    window.history.pushState({}, '', '/data');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('data-center-page')).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith('/data');
   });
 
   it('redirects authenticated login visits back to the home page', async () => {

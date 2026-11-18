@@ -5,7 +5,7 @@ APP_USER="dsa"
 APP_GROUP="dsa"
 APP_UID="1000"
 APP_GID="1000"
-WRITABLE_DIRS="/app/data /app/logs /app/reports"
+WRITABLE_DIRS="/app/data /app/logs /app/reports /home/dsa/.longbridge"
 DATABASE_FILE="${DATABASE_PATH:-/app/data/stock_analysis.db}"
 
 warn() {
@@ -60,6 +60,19 @@ directory_needs_repair() {
     return 1
 }
 
+# Apple Silicon (e.g. M4) Linux VMs with newer kernels expose HWCAP2_SME,
+# causing NumPy's bundled OpenBLAS DYNAMIC_ARCH to dispatch unsupported SME
+# instructions and crash with SIGILL (exit code 132). Default to ARMV8 on
+# ARM64 only while preserving any explicit user override.
+case "$(uname -m 2>/dev/null || true)" in
+    aarch64|arm64)
+        if [ -z "${OPENBLAS_CORETYPE:-}" ]; then
+            OPENBLAS_CORETYPE="ARMV8"
+            export OPENBLAS_CORETYPE
+        fi
+        ;;
+esac
+
 if [ "$(id -u)" = "0" ]; then
     for dir in $WRITABLE_DIRS; do
         if ! mkdir -p "$dir"; then
@@ -84,6 +97,8 @@ if [ "$(id -u)" = "0" ]; then
         fi
     done
 
+    HOME="/home/dsa"
+    export HOME
     exec gosu "$APP_USER:$APP_GROUP" "$@"
 fi
 
